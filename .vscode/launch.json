@@ -1,0 +1,22 @@
+{
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:otlp-swift-server}",
+            "name": "Debug OTelSwiftServerCLI",
+            "program": "${workspaceFolder:otlp-swift-server}/.build/debug/OTelSwiftServerCLI",
+            "preLaunchTask": "swift: Build Debug OTelSwiftServerCLI"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:otlp-swift-server}",
+            "name": "Release OTelSwiftServerCLI",
+            "program": "${workspaceFolder:otlp-swift-server}/.build/release/OTelSwiftServerCLI",
+            "preLaunchTask": "swift: Build Release OTelSwiftServerCLI"
+        }
+    ]
+}
