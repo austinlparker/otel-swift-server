@@ -2,6 +2,7 @@ import Foundation
 import SwiftProtobuf
 import Vapor
 import Compression
+import OSLog
 
 /// Main entry point for the OTelSwiftServer library
 @available(macOS 13.0, *)
@@ -9,7 +10,6 @@ public final class OTelSwiftServer: @unchecked Sendable {
     private let config: OTelServerConfig
     private let server: OTelHTTPServer
     private let decoder: OTLPDecoder
-    private let logger: Logger
     
     private let traceService: TraceService
     private let metricsService: MetricsService
@@ -31,12 +31,10 @@ public final class OTelSwiftServer: @unchecked Sendable {
     ///   - config: Server configuration
     ///   - server: The HTTP server implementation to use (if nil, uses VaporServer)
     ///   - decoder: The OTLP decoder to use
-    ///   - logger: The logger to use
     public init(
         config: OTelServerConfig = .default,
         server: OTelHTTPServer? = nil,
-        decoder: OTLPDecoder = DefaultOTLPDecoder(),
-        logger: Logger = ConsoleLogger()
+        decoder: OTLPDecoder = DefaultOTLPDecoder()
     ) throws {
         self.config = config
         
@@ -45,16 +43,16 @@ public final class OTelSwiftServer: @unchecked Sendable {
         } else {
             let app = Application(.production)
             app.http.server.configuration.port = config.port
+            app.logger.logLevel = .info
             self.server = VaporServer(app: app)
         }
         
         self.decoder = decoder
-        self.logger = logger
         
-        // Initialize services
-        self.traceService = TraceService(logger: logger)
-        self.metricsService = MetricsService(logger: logger)
-        self.logsService = LogsService(logger: logger)
+        // Initialize services with config logger
+        self.traceService = TraceService(logger: config.logger)
+        self.metricsService = MetricsService(logger: config.logger)
+        self.logsService = LogsService(logger: config.logger)
         
         // Initialize streams
         (traces, traceContinuation) = AsyncStream.makeStream()
@@ -187,21 +185,14 @@ public final class OTelSwiftServer: @unchecked Sendable {
     /// Start the OTel server
     /// - Throws: OTelServerError if startup fails
     public func start() async throws {
-        logger.info("Starting OTel server", metadata: [
-            "host": config.host,
-            "port": "\(config.port)"
-        ])
-        
+        config.logger.info("Starting OTel server host=\(self.config.host) port=\(self.config.port)")
         try await server.start()
     }
     
     /// Stop the OTel server
     /// - Throws: OTelServerError if shutdown fails
     public func stop() async throws {
-        logger.info("Stopping OTel server", metadata: [
-            "host": config.host,
-            "port": "\(config.port)"
-        ])
+        config.logger.info("Stopping OTel server host=\(self.config.host) port=\(self.config.port)")
         
         // Cancel all continuations
         traceContinuation?.finish()

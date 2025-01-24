@@ -1,11 +1,12 @@
 import Foundation
 import SwiftProtobuf
 import Vapor
+import OSLog
 
 public class TraceService {
-    private let logger: Logger
+    private let logger: os.Logger
     
-    public init(logger: Logger) {
+    public init(logger: os.Logger) {
         self.logger = logger
     }
     
@@ -16,16 +17,17 @@ public class TraceService {
         
         // Log resource attributes
         for resourceSpan in request.resourceSpans {
-            logger.info("Processing resource", metadata: [
-                "attributes": resourceSpan.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-            ])
+            let attributes = resourceSpan.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+            logger.info("Processing resource: \(attributes, privacy: .public)")
             
             // Log scope information
             for scopeSpan in resourceSpan.scopeSpans {
-                logger.info("Processing spans", metadata: [
-                    "scope": "\(scopeSpan.scope.name) v\(scopeSpan.scope.version)",
-                    "spanCount": "\(scopeSpan.spans.count)"
-                ])
+                logger.info("""
+                    Processing spans: \
+                    scope=\(scopeSpan.scope.name, privacy: .public) \
+                    version=\(scopeSpan.scope.version, privacy: .public) \
+                    count=\(scopeSpan.spans.count, privacy: .public)
+                    """)
             }
         }
     }

@@ -4,6 +4,7 @@ import VaporTesting
 import SwiftProtobuf
 import Vapor
 import Gzip
+import OSLog
 
 protocol Service {}
 extension TraceService: Service {}
@@ -42,23 +43,14 @@ struct OTelSwiftServerTests {
     @Test("Server should start and stop correctly")
     func testServerLifecycle() async throws {
         let server = TestHTTPServer()
-        let logger = TestLogger()
-        let otelServer = try OTelSwiftServer(server: server, logger: logger)
+        let config = OTelServerConfig()
+        let otelServer = try OTelSwiftServer(config: config, server: server)
         
         try await otelServer.start()
         #expect(server.isRunning)
-        #expect(logger.entries.contains { entry in
-            entry.level == "INFO" &&
-            entry.message.contains("Starting OTel server") &&
-            entry.metadata["port"] as? String == "4318"
-        })
         
         try await otelServer.stop()
         #expect(!server.isRunning)
-        #expect(logger.entries.contains { entry in
-            entry.level == "INFO" &&
-            entry.message.contains("Stopping OTel server")
-        })
     }
     
     // MARK: - Telemetry Processing Tests
@@ -66,8 +58,8 @@ struct OTelSwiftServerTests {
     @Test("Server should process trace data correctly")
     func testTraceProcessing() async throws {
         let server = TestHTTPServer()
-        let logger = TestLogger()
-        let otelServer = try OTelSwiftServer(server: server, logger: logger)
+        let config = OTelServerConfig()
+        let otelServer = try OTelSwiftServer(config: config, server: server)
         
         // Create sample trace data
         var request = Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest()
@@ -112,8 +104,8 @@ struct OTelSwiftServerTests {
     @Test("Server should handle invalid requests correctly")
     func testInvalidRequests() async throws {
         let server = TestHTTPServer()
-        let logger = TestLogger()
-        let otelServer = try OTelSwiftServer(server: server, logger: logger)
+        let config = OTelServerConfig()
+        let otelServer = try OTelSwiftServer(config: config, server: server)
         
         try await otelServer.start()
         
@@ -172,8 +164,8 @@ struct OTelSwiftServerTests {
     @Test("Server should handle JSON format correctly")
     func testJSONFormat() async throws {
         let server = TestHTTPServer()
-        let logger = TestLogger()
-        let otelServer = try OTelSwiftServer(server: server, logger: logger)
+        let config = OTelServerConfig()
+        let otelServer = try OTelSwiftServer(config: config, server: server)
         
         // Create sample trace data
         var request = Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest()
@@ -218,9 +210,8 @@ struct OTelSwiftServerTests {
     @Test("Server should handle request size limit correctly")
     func testRequestSizeLimit() async throws {
         let server = TestHTTPServer()
-        let logger = TestLogger()
         let config = OTelServerConfig(maxRequestSize: 10)
-        let otelServer = try OTelSwiftServer(config: config, server: server, logger: logger)
+        let otelServer = try OTelSwiftServer(config: config, server: server)
         
         try await otelServer.start()
         
@@ -250,9 +241,8 @@ struct OTelSwiftServerTests {
         let app = try await Application.make(.testing)
         app.http.server.configuration.port = 4319
         let server = VaporServer(app: app)
-        let logger = TestLogger()
         let config = OTelServerConfig(port: 4319, enableCompression: true)
-        let otelServer = try OTelSwiftServer(config: config, server: server, logger: logger)
+        let otelServer = try OTelSwiftServer(config: config, server: server)
         
         // Create sample trace data
         var request = Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest()

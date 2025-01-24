@@ -5,7 +5,7 @@ import NIOHTTP1
 /// Vapor implementation of HTTPServer
 public class VaporServer: OTelHTTPServer, @unchecked Sendable {
     private let app: Application
-    private let handlers: [(path: String, handler: @Sendable (HTTPRequest) async throws -> HTTPResponse)]
+    private var handlers: [(path: String, handler: @Sendable (HTTPRequest) async throws -> HTTPResponse)]
     
     public var port: Int {
         app.http.server.configuration.port
@@ -30,16 +30,14 @@ public class VaporServer: OTelHTTPServer, @unchecked Sendable {
     }
     
     public func post(path: String, handler: @escaping @Sendable (HTTPRequest) async throws -> HTTPResponse) {
+        handlers.append((path: path, handler: handler))
+        
         let pathComponents = path
             .split(separator: "/")
             .map(String.init)
             .map(PathComponent.init(stringLiteral:))
         
-        app.post(pathComponents) { [weak self] req async throws -> Response in
-            guard let self = self else {
-                throw HTTPError.serverError("Server was deallocated")
-            }
-            
+        app.post(pathComponents) { [handler] req async throws -> Response in
             let request = VaporRequest(request: req)
             let response = try await handler(request)
             return try await self.convertResponse(response)
@@ -47,16 +45,14 @@ public class VaporServer: OTelHTTPServer, @unchecked Sendable {
     }
     
     public func get(path: String, handler: @escaping @Sendable (HTTPRequest) async throws -> HTTPResponse) {
+        handlers.append((path: path, handler: handler))
+        
         let pathComponents = path
             .split(separator: "/")
             .map(String.init)
             .map(PathComponent.init(stringLiteral:))
         
-        app.get(pathComponents) { [weak self] req async throws -> Response in
-            guard let self = self else {
-                throw HTTPError.serverError("Server was deallocated")
-            }
-            
+        app.get(pathComponents) { [handler] req async throws -> Response in
             let request = VaporRequest(request: req)
             let response = try await handler(request)
             return try await self.convertResponse(response)

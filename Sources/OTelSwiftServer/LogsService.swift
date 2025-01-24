@@ -1,14 +1,15 @@
 import Foundation
 import SwiftProtobuf
 import Vapor
+import OSLog
 
 /// A service that handles OpenTelemetry logs data processing and response generation.
 public class LogsService {
-    private let logger: Logger
+    private let logger: os.Logger
     
     /// Creates a new logs service with the specified logger.
     /// - Parameter logger: The logger to use for recording processing information.
-    public init(logger: Logger) {
+    public init(logger: os.Logger) {
         self.logger = logger
     }
     
@@ -22,16 +23,17 @@ public class LogsService {
         
         // Log resource attributes
         for resourceLogs in request.resourceLogs {
-            logger.info("Processing resource", metadata: [
-                "attributes": resourceLogs.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-            ])
+            let attributes = resourceLogs.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+            logger.info("Processing resource: \(attributes, privacy: .public)")
             
             // Log scope information
             for scopeLogs in resourceLogs.scopeLogs {
-                logger.info("Processing logs", metadata: [
-                    "scope": "\(scopeLogs.scope.name) v\(scopeLogs.scope.version)",
-                    "logCount": "\(scopeLogs.logRecords.count)"
-                ])
+                logger.info("""
+                    Processing logs: \
+                    scope=\(scopeLogs.scope.name, privacy: .public) \
+                    version=\(scopeLogs.scope.version, privacy: .public) \
+                    count=\(scopeLogs.logRecords.count, privacy: .public)
+                    """)
             }
         }
     }
@@ -48,8 +50,8 @@ public class LogsService {
             let jsonData = try response.jsonUTF8Data()
             return VaporResponse(body: jsonData, contentType: "application/json", contentEncoding: nil)
         case "application/x-protobuf", _:
-            let bytes: [UInt8] = try response.serializedBytes()
-            return VaporResponse(body: Data(bytes), contentType: "application/x-protobuf", contentEncoding: nil)
+            let bytes = try response.serializedData()
+            return VaporResponse(body: bytes, contentType: "application/x-protobuf", contentEncoding: nil)
         }
     }
 } 

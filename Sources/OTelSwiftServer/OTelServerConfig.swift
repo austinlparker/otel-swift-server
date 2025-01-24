@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Configuration options for OTelSwiftServer
 public struct OTelServerConfig: Sendable {
@@ -14,6 +15,9 @@ public struct OTelServerConfig: Sendable {
     /// Whether to enable compression (default: false)
     public let enableCompression: Bool
     
+    /// Logger configuration
+    public let logger: os.Logger
+    
     /// Default configuration
     public static let `default` = OTelServerConfig()
     
@@ -23,15 +27,20 @@ public struct OTelServerConfig: Sendable {
     ///   - host: Host to bind to
     ///   - maxRequestSize: Maximum allowed request size in bytes
     ///   - enableCompression: Whether to enable response compression
+    ///   - subsystem: The subsystem for logging (default: "com.otel.swift.server")
+    ///   - category: The category for logging (default: "otlp")
     public init(
         port: Int = 4318,
         host: String = "localhost",
         maxRequestSize: Int = 5 * 1024 * 1024,
-        enableCompression: Bool = false
+        enableCompression: Bool = false,
+        subsystem: String = "com.otel.swift.server",
+        category: String = "otlp"
     ) {
         self.port = port
         self.host = host
         self.maxRequestSize = maxRequestSize
         self.enableCompression = enableCompression
+        self.logger = Logger(subsystem: subsystem, category: category)
     }
 } 
