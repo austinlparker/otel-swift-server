@@ -1,64 +1,45 @@
-import Vapor
+import Foundation
 import SwiftProtobuf
+import Vapor
 
-@available(macOS 13.0, *)
-final class TraceService: @unchecked Sendable {
-    private let app: Application
-    private let logger = Logger(label: "trace-service")
-    private let onData: (Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest) -> Void
+public class TraceService {
+    private let logger: Logger
     
-    init(app: Application, onData: @escaping (Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest) -> Void) {
-        self.app = app
-        self.onData = onData
+    public init(logger: Logger) {
+        self.logger = logger
+    }
+    
+    public func process(_ request: Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest) throws {
+        guard !request.resourceSpans.isEmpty else {
+            throw OTelServerError.invalidRequest(reason: "No resource spans provided")
+        }
         
-        app.post("v1", "traces") { [weak self] req async throws -> Response in
-            guard let self = self else {
-                throw Abort(.internalServerError)
+        // Log resource attributes
+        for resourceSpan in request.resourceSpans {
+            logger.info("Processing resource", metadata: [
+                "attributes": resourceSpan.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+            ])
+            
+            // Log scope information
+            for scopeSpan in resourceSpan.scopeSpans {
+                logger.info("Processing spans", metadata: [
+                    "scope": "\(scopeSpan.scope.name) v\(scopeSpan.scope.version)",
+                    "spanCount": "\(scopeSpan.spans.count)"
+                ])
             }
-            return try await self.export(req)
         }
     }
     
-    private func export(_ req: Request) async throws -> Response {
-        guard var bodyData = try await req.body.collect(max: 1024 * 1024).get() else {
-            throw Abort(.badRequest)
-        }
-        
-        // Convert ByteBuffer to [UInt8]
-        let bytes = bodyData.readBytes(length: bodyData.readableBytes) ?? []
-        
-        // Decode the protobuf request
-        let request = try Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest(serializedBytes: bytes)
-        
-        // Process the request
-        for resourceSpan in request.resourceSpans {
-            let resource = resourceSpan.resource
-            logger.info("Processing resource with \(resource.attributes.count) attributes")
-            
-            for scopeSpan in resourceSpan.scopeSpans {
-                let scope = scopeSpan.scope
-                logger.info("Processing spans from: \(scope.name) v\(scope.version)")
-                
-                for span in scopeSpan.spans {
-                    logger.info("Received span: \(span.name)")
-                }
-            }
-        }
-        
-        // Send data to handler
-        onData(request)
-        
-        // Create and encode the response
+    public func buildResponse(acceptType: String) throws -> HTTPResponse {
         let response = Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceResponse()
-        let responseBytes: [UInt8] = try response.serializedBytes()
         
-        var headers = HTTPHeaders()
-        headers.setProtobufContentType()
-        
-        return Response(
-            status: .ok,
-            headers: headers,
-            body: .init(data: Data(responseBytes))
-        )
+        switch acceptType.lowercased() {
+        case "application/json":
+            let jsonData = try response.jsonUTF8Data()
+            return VaporResponse(body: jsonData, contentType: "application/json", contentEncoding: nil)
+        case "application/x-protobuf", _:
+            let bytes = try response.serializedData()
+            return VaporResponse(body: bytes, contentType: "application/x-protobuf", contentEncoding: nil)
+        }
     }
 } 

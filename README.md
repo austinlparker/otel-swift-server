@@ -5,8 +5,10 @@ A Swift library for receiving OpenTelemetry data over HTTP. This server implemen
 ## Features
 
 - Receive traces, metrics, and logs via HTTP endpoints
+- Support for both JSON and Protobuf encoding
+- Gzip compression support for requests and responses
+- Configurable request size limits
 - Async/await API with AsyncStream for processing telemetry data
-- Protobuf-encoded data handling
 - Easy integration with existing Swift applications
 - Built on top of Vapor for reliable HTTP server functionality
 
@@ -37,24 +39,30 @@ targets: [
 
 ## Usage
 
-### Basic Server Setup
+### Server Configuration
 
 ```swift
 import OTelSwiftServer
 
-// Initialize server with default port (8080)
+// Default configuration
 let server = try OTelSwiftServer()
 
-// Or specify a custom port
-let server = try OTelSwiftServer(port: 8081)
+// Custom configuration
+let config = OTelServerConfig(
+    port: 4318,                    // Standard OTLP/HTTP port
+    host: "localhost",             // Host to bind to
+    maxRequestSize: 5 * 1024 * 1024, // 5MB max request size
+    enableCompression: true        // Enable gzip compression
+)
+let server = try OTelSwiftServer(config: config)
 
 // Start the server
 try await server.start()
 
 // Get endpoint URLs
-print(server.tracesURL)   // http://localhost:8081/v1/traces
-print(server.metricsURL)  // http://localhost:8081/v1/metrics
-print(server.logsURL)     // http://localhost:8081/v1/logs
+print(server.tracesURL)   // http://localhost:4318/v1/traces
+print(server.metricsURL)  // http://localhost:4318/v1/metrics
+print(server.logsURL)     // http://localhost:4318/v1/logs
 ```
 
 ### Processing Telemetry Data
@@ -126,19 +134,57 @@ let testServer = try await OTelSwiftServer.testing()
 
 ## Protocol Support
 
-The server implements the OpenTelemetry Protocol (OTLP) over HTTP/protobuf:
+The server implements the OpenTelemetry Protocol (OTLP) over HTTP with support for both JSON and Protobuf encoding:
+
+### Endpoints
 
 - Traces: `/v1/traces` endpoint accepting `ExportTraceServiceRequest`
 - Metrics: `/v1/metrics` endpoint accepting `ExportMetricsServiceRequest`
 - Logs: `/v1/logs` endpoint accepting `ExportLogsServiceRequest`
 
-All endpoints expect protobuf-encoded requests with `Content-Type: application/x-protobuf`.
+### Content Types
+
+The server supports the following content types:
+
+- `application/x-protobuf` for Protobuf-encoded requests/responses
+- `application/json` for JSON-encoded requests/responses
+
+### Compression
+
+The server supports gzip compression for both requests and responses when
+enabled in the configuration:
+
+- For requests: Include `Content-Encoding: gzip` header
+- For responses: Include `Accept-Encoding: gzip` header
 
 ## Example Client Configuration
 
 When configuring OpenTelemetry clients to send data to this server, use the following settings:
 
-```
-endpoint: http://localhost:8081
+### Protobuf Format
+
+```yaml
+endpoint: http://localhost:4318
 protocol: http/protobuf
+compression: gzip  # optional
 ```
+
+### JSON Format
+
+```yaml
+endpoint: http://localhost:4318
+protocol: http/json
+compression: gzip  # optional
+```
+
+## Error Handling
+
+The server provides detailed error responses for common issues:
+
+- Invalid content type
+- Missing or empty request body
+- Request size exceeding configured limit
+- Invalid protobuf/JSON data
+- Missing required fields
+
+Error responses include appropriate HTTP status codes and descriptive error messages.

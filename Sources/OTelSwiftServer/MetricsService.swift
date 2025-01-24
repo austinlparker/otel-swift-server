@@ -1,64 +1,55 @@
-import Vapor
+import Foundation
 import SwiftProtobuf
+import Vapor
 
-@available(macOS 13.0, *)
-final class MetricsService: @unchecked Sendable {
-    private let app: Application
-    private let logger = Logger(label: "metrics-service")
-    private let onData: (Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest) -> Void
+/// A service that handles OpenTelemetry metrics data processing and response generation.
+public class MetricsService {
+    private let logger: Logger
     
-    init(app: Application, onData: @escaping (Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest) -> Void) {
-        self.app = app
-        self.onData = onData
+    /// Creates a new metrics service with the specified logger.
+    /// - Parameter logger: The logger to use for recording processing information.
+    public init(logger: Logger) {
+        self.logger = logger
+    }
+    
+    /// Processes an OpenTelemetry metrics export request.
+    /// - Parameter request: The metrics export request containing resource metrics data.
+    /// - Throws: `OTelServerError.invalidRequest` if no resource metrics are provided.
+    public func process(_ request: Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest) throws {
+        guard !request.resourceMetrics.isEmpty else {
+            throw OTelServerError.invalidRequest(reason: "No resource metrics provided")
+        }
         
-        app.post("v1", "metrics") { [weak self] req async throws -> Response in
-            guard let self = self else {
-                throw Abort(.internalServerError)
+        // Log resource attributes
+        for resourceMetrics in request.resourceMetrics {
+            logger.info("Processing resource", metadata: [
+                "attributes": resourceMetrics.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+            ])
+            
+            // Log scope information
+            for scopeMetrics in resourceMetrics.scopeMetrics {
+                logger.info("Processing metrics", metadata: [
+                    "scope": "\(scopeMetrics.scope.name) v\(scopeMetrics.scope.version)",
+                    "metricCount": "\(scopeMetrics.metrics.count)"
+                ])
             }
-            return try await self.export(req)
         }
     }
     
-    private func export(_ req: Request) async throws -> Response {
-        guard var bodyData = try await req.body.collect(max: 1024 * 1024).get() else {
-            throw Abort(.badRequest)
-        }
-        
-        // Convert ByteBuffer to [UInt8]
-        let bytes = bodyData.readBytes(length: bodyData.readableBytes) ?? []
-        
-        // Decode the protobuf request
-        let request = try Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest(serializedBytes: bytes)
-        
-        // Process the request
-        for resourceMetrics in request.resourceMetrics {
-            let resource = resourceMetrics.resource
-            logger.info("Processing resource with \(resource.attributes.count) attributes")
-            
-            for scopeMetrics in resourceMetrics.scopeMetrics {
-                let scope = scopeMetrics.scope
-                logger.info("Processing metrics from: \(scope.name) v\(scope.version)")
-                
-                for metric in scopeMetrics.metrics {
-                    logger.info("Received metric: \(metric.name)")
-                }
-            }
-        }
-        
-        // Send data to handler
-        onData(request)
-        
-        // Create and encode the response
+    /// Builds an HTTP response for the metrics export operation.
+    /// - Parameter acceptType: The content type requested by the client (e.g., "application/json" or "application/x-protobuf").
+    /// - Returns: An HTTP response containing the serialized metrics export response.
+    /// - Throws: An error if serialization fails.
+    public func buildResponse(acceptType: String) throws -> HTTPResponse {
         let response = Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceResponse()
-        let responseBytes: [UInt8] = try response.serializedBytes()
         
-        var headers = HTTPHeaders()
-        headers.setProtobufContentType()
-        
-        return Response(
-            status: .ok,
-            headers: headers,
-            body: .init(data: Data(responseBytes))
-        )
+        switch acceptType.lowercased() {
+        case "application/json":
+            let jsonData = try response.jsonUTF8Data()
+            return VaporResponse(body: jsonData, contentType: "application/json", contentEncoding: nil)
+        case "application/x-protobuf", _:
+            let bytes: [UInt8] = try response.serializedBytes()
+            return VaporResponse(body: Data(bytes), contentType: "application/x-protobuf", contentEncoding: nil)
+        }
     }
 } 

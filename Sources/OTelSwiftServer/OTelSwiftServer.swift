@@ -1,120 +1,220 @@
-import Vapor
+import Foundation
 import SwiftProtobuf
+import Vapor
+import Compression
 
 /// Main entry point for the OTelSwiftServer library
 @available(macOS 13.0, *)
-public final class OTelSwiftServer {
-    private let app: Application
+public final class OTelSwiftServer: @unchecked Sendable {
+    private let config: OTelServerConfig
+    private let server: OTelHTTPServer
+    private let decoder: OTLPDecoder
+    private let logger: Logger
+    
     private let traceService: TraceService
     private let metricsService: MetricsService
     private let logsService: LogsService
     
-    private let tracesContinuation: AsyncStream<Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest>.Continuation
-    private let metricsContinuation: AsyncStream<Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest>.Continuation
-    private let logsContinuation: AsyncStream<Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest>.Continuation
+    private var traceContinuation: AsyncStream<Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest>.Continuation?
+    private var metricsContinuation: AsyncStream<Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest>.Continuation?
+    private var logsContinuation: AsyncStream<Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest>.Continuation?
     
     /// Stream of received trace data
-    public let traces: AsyncStream<Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest>
+    public var traces: AsyncStream<Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest>!
     /// Stream of received metrics data
-    public let metrics: AsyncStream<Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest>
+    public var metrics: AsyncStream<Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest>!
     /// Stream of received logs data
-    public let logs: AsyncStream<Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest>
+    public var logs: AsyncStream<Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest>!
     
-    /// Initialize OTelSwiftServer with a Vapor application
-    /// - Parameter app: The Vapor application to use
-    public init(app: Application) {
-        self.app = app
+    /// Initialize OTelSwiftServer with custom components
+    /// - Parameters:
+    ///   - config: Server configuration
+    ///   - server: The HTTP server implementation to use (if nil, uses VaporServer)
+    ///   - decoder: The OTLP decoder to use
+    ///   - logger: The logger to use
+    public init(
+        config: OTelServerConfig = .default,
+        server: OTelHTTPServer? = nil,
+        decoder: OTLPDecoder = DefaultOTLPDecoder(),
+        logger: Logger = ConsoleLogger()
+    ) throws {
+        self.config = config
         
-        // Initialize async streams
-        var tracesCont: AsyncStream<Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest>.Continuation!
-        var metricsCont: AsyncStream<Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest>.Continuation!
-        var logsCont: AsyncStream<Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest>.Continuation!
-        
-        self.traces = AsyncStream { continuation in
-            tracesCont = continuation
-        }
-        self.metrics = AsyncStream { continuation in
-            metricsCont = continuation
-        }
-        self.logs = AsyncStream { continuation in
-            logsCont = continuation
+        if let server = server {
+            self.server = server
+        } else {
+            let app = Application(.production)
+            app.http.server.configuration.port = config.port
+            self.server = VaporServer(app: app)
         }
         
-        self.tracesContinuation = tracesCont
-        self.metricsContinuation = metricsCont
-        self.logsContinuation = logsCont
+        self.decoder = decoder
+        self.logger = logger
         
         // Initialize services
-        self.traceService = TraceService(app: app) { [tracesContinuation] request in
-            tracesContinuation.yield(request)
-        }
-        self.metricsService = MetricsService(app: app) { [metricsContinuation] request in
-            metricsContinuation.yield(request)
-        }
-        self.logsService = LogsService(app: app) { [logsContinuation] request in
-            logsContinuation.yield(request)
-        }
+        self.traceService = TraceService(logger: logger)
+        self.metricsService = MetricsService(logger: logger)
+        self.logsService = LogsService(logger: logger)
+        
+        // Initialize streams
+        (traces, traceContinuation) = AsyncStream.makeStream()
+        (metrics, metricsContinuation) = AsyncStream.makeStream()
+        (logs, logsContinuation) = AsyncStream.makeStream()
+        
+        // Setup endpoints
+        setupEndpoints()
     }
     
-    /// Initialize OTelSwiftServer with default configuration
-    /// - Parameter port: The port to run the server on (default: 8080)
-    /// - Throws: If server initialization fails
-    public init(port: Int = 8080) throws {
-        self.app = Application(.production)
-        self.app.http.server.configuration.port = port
+    private func setupEndpoints() {
+        // Traces endpoint
+        server.post(path: "/v1/traces") { [weak self] (request: HTTPRequest) async throws -> HTTPResponse in
+            guard let self = self else {
+                throw OTelServerError.serverError(reason: "Server was deallocated")
+            }
+            
+            let body = request.body
+            let contentType = request.contentType
+            
+            // Check request size
+            if body.count > self.config.maxRequestSize {
+                throw HTTPError.payloadTooLarge(maxSize: self.config.maxRequestSize)
+            }
+            
+            // Decode request
+            let traceRequest = try self.decoder.decodeTraces(body, contentType: contentType)
+            
+            // Process request
+            try self.traceService.process(traceRequest)
+            
+            // Yield to stream
+            self.traceContinuation?.yield(traceRequest)
+            
+            // Return response with compression if enabled and accepted
+            let response = try self.traceService.buildResponse(acceptType: request.acceptType)
+            if self.config.enableCompression,
+               let acceptEncoding = request.acceptEncoding,
+               acceptEncoding.contains("gzip") {
+                return VaporResponse(
+                    body: response.body,
+                    contentType: response.contentType,
+                    contentEncoding: "gzip"
+                )
+            }
+            return response
+        }
         
-        // Initialize async streams
-        var tracesCont: AsyncStream<Opentelemetry_Proto_Collector_Trace_V1_ExportTraceServiceRequest>.Continuation!
-        var metricsCont: AsyncStream<Opentelemetry_Proto_Collector_Metrics_V1_ExportMetricsServiceRequest>.Continuation!
-        var logsCont: AsyncStream<Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest>.Continuation!
+        // Metrics endpoint
+        server.post(path: "/v1/metrics") { [weak self] (request: HTTPRequest) async throws -> HTTPResponse in
+            guard let self = self else {
+                throw OTelServerError.serverError(reason: "Server was deallocated")
+            }
+            
+            let body = request.body
+            let contentType = request.contentType
+            
+            // Check request size
+            if body.count > self.config.maxRequestSize {
+                throw HTTPError.payloadTooLarge(maxSize: self.config.maxRequestSize)
+            }
+            
+            // Decode request
+            let metricsRequest = try self.decoder.decodeMetrics(body, contentType: contentType)
+            
+            // Process request
+            try self.metricsService.process(metricsRequest)
+            
+            // Yield to stream
+            self.metricsContinuation?.yield(metricsRequest)
+            
+            // Return response with compression if enabled and accepted
+            let response = try self.metricsService.buildResponse(acceptType: request.acceptType)
+            if self.config.enableCompression,
+               let acceptEncoding = request.acceptEncoding,
+               acceptEncoding.contains("gzip") {
+                return VaporResponse(
+                    body: response.body,
+                    contentType: response.contentType,
+                    contentEncoding: "gzip"
+                )
+            }
+            return response
+        }
         
-        self.traces = AsyncStream { continuation in
-            tracesCont = continuation
-        }
-        self.metrics = AsyncStream { continuation in
-            metricsCont = continuation
-        }
-        self.logs = AsyncStream { continuation in
-            logsCont = continuation
-        }
-        
-        self.tracesContinuation = tracesCont
-        self.metricsContinuation = metricsCont
-        self.logsContinuation = logsCont
-        
-        // Initialize services
-        self.traceService = TraceService(app: app) { [tracesContinuation] request in
-            tracesContinuation.yield(request)
-        }
-        self.metricsService = MetricsService(app: app) { [metricsContinuation] request in
-            metricsContinuation.yield(request)
-        }
-        self.logsService = LogsService(app: app) { [logsContinuation] request in
-            logsContinuation.yield(request)
+        // Logs endpoint
+        server.post(path: "/v1/logs") { [weak self] (request: HTTPRequest) async throws -> HTTPResponse in
+            guard let self = self else {
+                throw OTelServerError.serverError(reason: "Server was deallocated")
+            }
+            
+            let body = request.body
+            let contentType = request.contentType
+            
+            // Check request size
+            if body.count > self.config.maxRequestSize {
+                throw HTTPError.payloadTooLarge(maxSize: self.config.maxRequestSize)
+            }
+            
+            // Decode request
+            let logsRequest = try self.decoder.decodeLogs(body, contentType: contentType)
+            
+            // Process request
+            try self.logsService.process(logsRequest)
+            
+            // Yield to stream
+            self.logsContinuation?.yield(logsRequest)
+            
+            // Return response with compression if enabled and accepted
+            let response = try self.logsService.buildResponse(acceptType: request.acceptType)
+            if self.config.enableCompression,
+               let acceptEncoding = request.acceptEncoding,
+               acceptEncoding.contains("gzip") {
+                return VaporResponse(
+                    body: response.body,
+                    contentType: response.contentType,
+                    contentEncoding: "gzip"
+                )
+            }
+            return response
         }
     }
     
     deinit {
-        tracesContinuation.finish()
-        metricsContinuation.finish()
-        logsContinuation.finish()
+        traceContinuation?.finish()
+        metricsContinuation?.finish()
+        logsContinuation?.finish()
     }
     
     /// Start the OTel server
-    /// - Throws: If server startup fails
+    /// - Throws: OTelServerError if startup fails
     public func start() async throws {
-        try await app.startup()
+        logger.info("Starting OTel server", metadata: [
+            "host": config.host,
+            "port": "\(config.port)"
+        ])
+        
+        try await server.start()
     }
     
     /// Stop the OTel server
+    /// - Throws: OTelServerError if shutdown fails
     public func stop() async throws {
-        try await app.asyncShutdown()
+        logger.info("Stopping OTel server", metadata: [
+            "host": config.host,
+            "port": "\(config.port)"
+        ])
+        
+        // Cancel all continuations
+        traceContinuation?.finish()
+        metricsContinuation?.finish()
+        logsContinuation?.finish()
+        
+        try await server.stop()
     }
     
     /// Get the base URL of the server
-    /// - Returns: The base URL as a string (e.g. "http://localhost:8080")
+    /// - Returns: The base URL as a string (e.g. "http://localhost:4318")
     public var baseURL: String {
-        "http://localhost:\(app.http.server.configuration.port)"
+        "http://\(config.host):\(server.port)"
     }
     
     /// Get the traces endpoint URL
@@ -130,15 +230,5 @@ public final class OTelSwiftServer {
     /// Get the logs endpoint URL
     public var logsURL: String {
         "\(baseURL)/v1/logs"
-    }
-}
-
-// MARK: - Convenience Initializers
-extension OTelSwiftServer {
-    /// Create an OTelSwiftServer instance for testing
-    /// - Returns: A configured OTelSwiftServer instance
-    public static func testing() async throws -> OTelSwiftServer {
-        let app = try await Application.make(.testing)
-        return OTelSwiftServer(app: app)
     }
 } 

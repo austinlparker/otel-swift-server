@@ -1,64 +1,55 @@
-import Vapor
+import Foundation
 import SwiftProtobuf
+import Vapor
 
-@available(macOS 13.0, *)
-final class LogsService: @unchecked Sendable {
-    private let app: Application
-    private let logger = Logger(label: "logs-service")
-    private let onData: (Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest) -> Void
+/// A service that handles OpenTelemetry logs data processing and response generation.
+public class LogsService {
+    private let logger: Logger
     
-    init(app: Application, onData: @escaping (Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest) -> Void) {
-        self.app = app
-        self.onData = onData
+    /// Creates a new logs service with the specified logger.
+    /// - Parameter logger: The logger to use for recording processing information.
+    public init(logger: Logger) {
+        self.logger = logger
+    }
+    
+    /// Processes an OpenTelemetry logs export request.
+    /// - Parameter request: The logs export request containing resource logs data.
+    /// - Throws: `OTelServerError.invalidRequest` if no resource logs are provided.
+    public func process(_ request: Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest) throws {
+        guard !request.resourceLogs.isEmpty else {
+            throw OTelServerError.invalidRequest(reason: "No resource logs provided")
+        }
         
-        app.post("v1", "logs") { [weak self] req async throws -> Response in
-            guard let self = self else {
-                throw Abort(.internalServerError)
+        // Log resource attributes
+        for resourceLogs in request.resourceLogs {
+            logger.info("Processing resource", metadata: [
+                "attributes": resourceLogs.resource.attributes.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
+            ])
+            
+            // Log scope information
+            for scopeLogs in resourceLogs.scopeLogs {
+                logger.info("Processing logs", metadata: [
+                    "scope": "\(scopeLogs.scope.name) v\(scopeLogs.scope.version)",
+                    "logCount": "\(scopeLogs.logRecords.count)"
+                ])
             }
-            return try await self.export(req)
         }
     }
     
-    private func export(_ req: Request) async throws -> Response {
-        guard var bodyData = try await req.body.collect(max: 1024 * 1024).get() else {
-            throw Abort(.badRequest)
-        }
-        
-        // Convert ByteBuffer to [UInt8]
-        let bytes = bodyData.readBytes(length: bodyData.readableBytes) ?? []
-        
-        // Decode the protobuf request
-        let request = try Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceRequest(serializedBytes: bytes)
-        
-        // Process the request
-        for resourceLogs in request.resourceLogs {
-            let resource = resourceLogs.resource
-            logger.info("Processing resource with \(resource.attributes.count) attributes")
-            
-            for scopeLogs in resourceLogs.scopeLogs {
-                let scope = scopeLogs.scope
-                logger.info("Processing logs from: \(scope.name) v\(scope.version)")
-                
-                for record in scopeLogs.logRecords {
-                    logger.info("Received log: \(record.severityText) - \(record.body.stringValue)")
-                }
-            }
-        }
-        
-        // Send data to handler
-        onData(request)
-        
-        // Create and encode the response
+    /// Builds an HTTP response for the logs export operation.
+    /// - Parameter acceptType: The content type requested by the client (e.g., "application/json" or "application/x-protobuf").
+    /// - Returns: An HTTP response containing the serialized logs export response.
+    /// - Throws: An error if serialization fails.
+    public func buildResponse(acceptType: String) throws -> HTTPResponse {
         let response = Opentelemetry_Proto_Collector_Logs_V1_ExportLogsServiceResponse()
-        let responseBytes: [UInt8] = try response.serializedBytes()
         
-        var headers = HTTPHeaders()
-        headers.setProtobufContentType()
-        
-        return Response(
-            status: .ok,
-            headers: headers,
-            body: .init(data: Data(responseBytes))
-        )
+        switch acceptType.lowercased() {
+        case "application/json":
+            let jsonData = try response.jsonUTF8Data()
+            return VaporResponse(body: jsonData, contentType: "application/json", contentEncoding: nil)
+        case "application/x-protobuf", _:
+            let bytes: [UInt8] = try response.serializedBytes()
+            return VaporResponse(body: Data(bytes), contentType: "application/x-protobuf", contentEncoding: nil)
+        }
     }
 } 
